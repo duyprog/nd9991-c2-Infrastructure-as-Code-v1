@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: > 
+  This template is used to create server and relative component 
+Parameters: 
+  EnvironmentName: 
+    Type: String
+    Default: Udacity-Project
+Resources:
+  # Security Group for Application Load Balancer
+  ALBSecurityGroup: 
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http to Application Load Balancer
+      VpcId: 
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: 
+      - IpProtocol: tcp 
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0 
+      SecurityGroupEgress: 
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+  
+  # Security Group for Web Server
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http from ALB to WebServer
+      VpcId: 
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      SecurityGroupEgress: 
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+  # A launch config using to scale application
+  WebAppLaunchConfig: 
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties: 
+      UserData: 
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          echo "it works! Udagram, Udacity" > index.html
+      ImageId: ami-000340e2c761dddcd
+      KeyName: udacity-devops
+      SecurityGroups:
+        - !Ref WebServerSecurityGroup
+      InstanceType: t2.medium
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sdk"
+          Ebs: 
+            VolumeSize: 10
+  # Target group is using to attach ec2 to application load balancer            
+  WebAppTargetGroup: 
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckPort: 80
+      HealthCheckProtocol: "HTTP"
+      HealthyThresholdCount: 2
+      HealthCheckTimeoutSeconds: 8
+      UnhealthyThresholdCount: 5
+      Protocol: "HTTP"
+      Port: 80
+      VpcId: 
+        Fn::ImportValue: !Sub "${EnvironmentName}-VPCID"
+  
+  LoadBalancer: 
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      Subnets: 
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-NET1"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB-NET2"   
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - Fn::ImportValue:
+            !Sub "${EnvironmentName}-PRIV-NETS"  
+      LaunchConfigurationName: !Ref WebAppLaunchConfig
+      MaxSize: '4'
+      MinSize: '4'
+      TargetGroupARNs: 
+        - !Ref WebAppTargetGroup
+      HealthCheckType: ELB
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      DefaultActions:
+        - Type: "forward"
+          TargetGroupArn: !Ref WebAppTargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+  ALBListnerRule: 
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      Conditions:
+        - Field: path-pattern 
+          Values: [/]
+      ListenerArn: !Ref Listener
+      Priority: 1
+
+Outputs: 
+  URL: 
+    Description: URL of ALB for accessing 
+    Value: 
+      Fn::Sub: 
+          - "http://${DNS_NAME}" 
+          - DNS_NAME: !GetAtt LoadBalancer.DNSName 
